@@ -4,16 +4,18 @@
 # omarchy:hidden=true
 """Collect Google Antigravity usage into one display-ready JSON record.
 
-Parses local sessions and conversation logs from ~/.gemini/antigravity-cli/brain/
+Parses local sessions and conversation logs from ~/.gemini/antigravity/brain/
 and prints a JSON record matching the Omarchy agents panel contract.
 """
 
-from __future__ import annotations
-
+import argparse
 import datetime as dt
 import json
 import os
+import shutil
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 AGENT_ID = "agy"
@@ -21,7 +23,112 @@ AGENT_NAME = "Antigravity"
 AUTH_HELP = "Run `agy` to authenticate."
 
 
+def cache_root() -> Path:
+  return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "omarchy" / "agent-usage"
+
+
+def fetch_limits(force: bool = False) -> tuple[list[dict], str]:
+  cache_dir = cache_root()
+  cache_file = cache_dir / "agy-limits.json"
+
+  if not force and cache_file.is_file():
+    try:
+      mtime = cache_file.stat().st_mtime
+      if time.time() - mtime < 120:
+        with open(cache_file, "r", encoding="utf-8") as f:
+          cached = json.load(f)
+          if isinstance(cached, dict) and "limits" in cached:
+            return cached.get("limits", []), str(cached.get("tierLabel") or "")
+    except Exception:
+      pass
+
+  agy_bin = shutil.which("agy") or str(Path.home() / ".local/bin/agy")
+  if not shutil.which(agy_bin):
+    return [], ""
+
+  try:
+    res = subprocess.run(
+        [agy_bin, "-p", "/usage", "--output-format", "json"],
+        capture_output=True,
+        text=True,
+        timeout=8,
+    )
+    if res.returncode != 0 or not res.stdout.strip():
+      return [], ""
+
+    data = json.loads(res.stdout)
+    groups = data.get("command", {}).get("data", {}).get("groups", [])
+    limits = []
+    tier_label = "Pro"
+
+    for g in groups:
+      g_name = str(g.get("name") or "")
+      for b in g.get("buckets", []):
+        rem_frac = b.get("remaining_fraction")
+        if rem_frac is None:
+          continue
+        used_pct = max(0.0, min(1.0, round(1.0 - float(rem_frac), 4)))
+        window = str(b.get("window") or "")
+        b_name = str(b.get("name") or "")
+        resets_at = str(b.get("reset_time") or "")
+
+        if window == "5h" or "5-hour" in b_name.lower() or "five hour" in b_name.lower():
+          win_label = "Session (5-hour)"
+          win_title = "Session"
+        elif window == "weekly" or "week" in b_name.lower():
+          win_label = "Weekly (7-day)"
+          win_title = "Weekly"
+        else:
+          win_label = b_name
+          win_title = b_name
+
+        if g_name == "Gemini Models":
+          label = win_label
+          title = win_title
+        else:
+          label = f"{g_name} {win_label}"
+          title = f"{g_name} {win_title}"
+
+        limits.append({
+            "label": label,
+            "title": title,
+            "percent": used_pct,
+            "resetsAt": resets_at,
+        })
+
+    limits.sort(key=lambda x: (
+        0 if x["title"] == "Session" else (
+            1 if x["title"] == "Weekly" else 2
+        )
+    ))
+
+    try:
+      cache_dir.mkdir(parents=True, exist_ok=True)
+      tmp_file = cache_file.with_suffix(".tmp")
+      with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump({"limits": limits, "tierLabel": tier_label}, f)
+      tmp_file.replace(cache_file)
+    except Exception:
+      pass
+
+    return limits, tier_label
+  except Exception:
+    if cache_file.is_file():
+      try:
+        with open(cache_file, "r", encoding="utf-8") as f:
+          cached = json.load(f)
+          if isinstance(cached, dict) and "limits" in cached:
+            return cached.get("limits", []), str(cached.get("tierLabel") or "")
+      except Exception:
+        pass
+    return [], ""
+
+
 def main():
+  parser = argparse.ArgumentParser(description="Collect Antigravity usage record as JSON")
+  parser.add_argument("--force", action="store_true", help="Force refresh bypassing cache")
+  parser.add_argument("--limits-only", action="store_true", help="Only refresh rate limits")
+  args = parser.parse_args()
   now = dt.datetime.now(dt.timezone.utc)
   today = dt.date.today()
   today_str = today.strftime("%Y-%m-%d")
@@ -32,38 +139,60 @@ def main():
   ]
   daily_prompts = {d: 0 for d in recent_dates}
   active_dates = set()
+  today_sessions = set()
 
-  brain_dir = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+  home = Path.home()
+  brain_dirs = [
+      home / ".gemini" / "antigravity" / "brain",
+      home / ".gemini" / "antigravity-cli" / "brain",
+  ]
+
   total_prompts = 0
   total_sessions = 0
-  today_sessions = 0
+  seen_convs = set()
 
-  if brain_dir.is_dir():
-    for conv_dir in brain_dir.iterdir():
-      if not conv_dir.is_dir():
+  for b_dir in brain_dirs:
+    if not b_dir.is_dir():
+      continue
+    for conv_dir in b_dir.iterdir():
+      if not conv_dir.is_dir() or conv_dir.name in seen_convs:
         continue
+      seen_convs.add(conv_dir.name)
       total_sessions += 1
       transcript_file = conv_dir / ".system_generated" / "logs" / "transcript.jsonl"
       if transcript_file.is_file():
         try:
-          mtime = dt.date.fromtimestamp(transcript_file.stat().st_mtime)
-          mtime_str = mtime.strftime("%Y-%m-%d")
-          active_dates.add(mtime_str)
-          if mtime_str == today_str:
-            today_sessions += 1
-
           with open(transcript_file, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
-              if '"type":"USER_INPUT"' in line:
-                total_prompts += 1
-                if mtime_str in daily_prompts:
-                  daily_prompts[mtime_str] += 1
+              if '"USER_INPUT"' not in line:
+                continue
+              try:
+                entry = json.loads(line)
+              except Exception:
+                continue
+              if entry.get("type") != "USER_INPUT":
+                continue
+
+              total_prompts += 1
+              created_at = entry.get("created_at")
+              if created_at:
+                try:
+                  prompt_date = dt.datetime.fromisoformat(created_at).date().strftime("%Y-%m-%d")
+                except Exception:
+                  continue
+                active_dates.add(prompt_date)
+                if prompt_date in daily_prompts:
+                  daily_prompts[prompt_date] += 1
+                if prompt_date == today_str:
+                  today_sessions.add(conv_dir.name)
         except Exception:
           pass
 
   today_prompts = daily_prompts.get(today_str, 0)
   recent_days = [{"date": d, "messageCount": daily_prompts[d]} for d in recent_dates]
   sorted_active_dates = sorted(list(active_dates))
+
+  limits, tier_label = fetch_limits(force=args.force or args.limits_only)
 
   record = {
       "schemaVersion": 1,
@@ -73,7 +202,7 @@ def main():
       "ready": True,
       "hasLocalStats": True,
       "todayPrompts": today_prompts,
-      "todaySessions": today_sessions,
+      "todaySessions": len(today_sessions),
       "todayTotalTokens": 0,
       "todayTokensByModel": {},
       "recentDays": recent_days,
@@ -82,8 +211,8 @@ def main():
       "activeDays": len(sorted_active_dates),
       "activeDates": sorted_active_dates,
       "modelUsage": {},
-      "limits": [],
-      "tierLabel": "",
+      "limits": limits,
+      "tierLabel": tier_label,
       "usageStatusText": "",
       "authHelpText": AUTH_HELP,
   }
