@@ -61,6 +61,13 @@ case "$1" in
   pull)
     [[ $2 == "--ff-only" ]]
     ;;
+  worktree)
+    if [[ $2 == "list" && $3 == "--porcelain" ]]; then
+      if [[ -n ${TEST_GIT_QUATTRO_WORKTREE:-} ]]; then
+        printf 'worktree %s\nHEAD 1234\nbranch refs/heads/quattro\n\n' "$TEST_GIT_QUATTRO_WORKTREE"
+      fi
+    fi
+    ;;
   *)
     exit 1
     ;;
@@ -112,6 +119,14 @@ grep -Fx -- "-C $checkout fetch upstream quattro:quattro" "$git_log" >/dev/null 
 pass "dev checkout on another branch uses quattro's configured remote"
 
 : >"$git_log"
+TEST_GIT_BRANCH=refs/heads/feature TEST_GIT_QUATTRO_WORKTREE="$test_tmp/main-checkout" run_dev_update "$checkout"
+grep -Fx -- "-C $test_tmp/main-checkout pull --ff-only" "$git_log" >/dev/null ||
+  fail "dev checkout on another branch pulls quattro in its worktree when checked out" "$(cat "$git_log")"
+! grep -q -- "-C $checkout fetch origin quattro:quattro" "$git_log" ||
+  fail "dev checkout does not fetch in-place when quattro is checked out in a worktree" "$(cat "$git_log")"
+pass "dev checkout on another branch pulls quattro in its worktree"
+
+: >"$git_log"
 TEST_GIT_UPSTREAM=none run_dev_update "$checkout" >"$test_tmp/no-upstream.out"
 if grep -q ' pull ' "$git_log"; then
   fail "dev checkout without an upstream is not pulled" "$(cat "$git_log")"
@@ -127,6 +142,48 @@ fi
 grep -F "OMARCHY_PATH is not a git checkout: $checkout" "$test_tmp/invalid.err" >/dev/null ||
   fail "invalid dev checkout reports the configured path" "$(cat "$test_tmp/invalid.err")"
 pass "invalid dev checkout fails with a useful error"
+
+real_git=$(which git)
+real_tmp="$test_tmp/real"
+mkdir -p "$real_tmp"
+
+upstream_repo="$real_tmp/upstream"
+"$real_git" init -b quattro "$upstream_repo" >/dev/null
+"$real_git" -C "$upstream_repo" config user.name "Tester"
+"$real_git" -C "$upstream_repo" config user.email "test@example.com"
+"$real_git" -C "$upstream_repo" commit --allow-empty -m "initial" >/dev/null
+
+local_repo="$real_tmp/local"
+"$real_git" clone "$upstream_repo" "$local_repo" >/dev/null 2>&1
+"$real_git" -C "$local_repo" config user.name "Tester"
+"$real_git" -C "$local_repo" config user.email "test@example.com"
+
+feature_wt="$real_tmp/feature-wt"
+"$real_git" -C "$local_repo" worktree add -b feature "$feature_wt" >/dev/null 2>&1
+
+"$real_git" -C "$upstream_repo" commit --allow-empty -m "upstream update 1" >/dev/null
+
+OMARCHY_PATH="$feature_wt" "$ROOT/bin/omarchy-update-dev" >/dev/null 2>&1
+
+upstream_head=$("$real_git" -C "$upstream_repo" rev-parse HEAD)
+local_quattro_head=$("$real_git" -C "$local_repo" rev-parse refs/heads/quattro)
+[[ $upstream_head == "$local_quattro_head" ]] ||
+  fail "real git worktree update did not fast-forward quattro" "expected $upstream_head, got $local_quattro_head"
+
+wt_branch=$("$real_git" -C "$feature_wt" symbolic-ref --short HEAD)
+[[ $wt_branch == "feature" ]] ||
+  fail "real git worktree update changed active feature branch" "$wt_branch"
+pass "real git worktree update pulls quattro in its worktree cleanly"
+
+"$real_git" -C "$local_repo" checkout -b other >/dev/null 2>&1
+"$real_git" -C "$upstream_repo" commit --allow-empty -m "upstream update 2" >/dev/null
+OMARCHY_PATH="$feature_wt" "$ROOT/bin/omarchy-update-dev" >/dev/null 2>&1
+
+upstream_head_2=$("$real_git" -C "$upstream_repo" rev-parse HEAD)
+local_quattro_head_2=$("$real_git" -C "$local_repo" rev-parse refs/heads/quattro)
+[[ $upstream_head_2 == "$local_quattro_head_2" ]] ||
+  fail "real git in-place fetch did not fast-forward quattro" "expected $upstream_head_2, got $local_quattro_head_2"
+pass "real git in-place fetch fast-forwards quattro when not checked out in any worktree"
 
 grep -qE '^ *omarchy-update-dev$' "$ROOT/bin/omarchy-update" ||
   fail "top-level update includes the dev checkout step"
