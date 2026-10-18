@@ -522,6 +522,8 @@ def step_model(step):
 
 
 def selected_model(step):
+  if step.get("source") == "MODEL":
+    return ""
   content = step.get("content")
   if not isinstance(content, str) or "Model Selection" not in content:
     return ""
@@ -642,28 +644,41 @@ def local_stats(root, problems=None):
     if conversation:
       stats.add_prompts(stats.today if local_day(modified) == stats.today else None, session_of(conversation), 0)
 
-  for transcript in (root / "brain").glob("*/.system_generated/logs/transcript.jsonl"):
-    try:
-      lines = transcript.read_text(encoding="utf-8", errors="ignore").splitlines()
-    except OSError:
-      problems.append(str(transcript))
-      continue
-    # The model a conversation runs on carries from step to step until a
-    # step names another one.
-    current = ""
-    for line in lines:
+  brain_dirs = [root / "brain"]
+  if root.name in ("antigravity", "antigravity-cli"):
+    alt_name = "antigravity" if root.name == "antigravity-cli" else "antigravity-cli"
+    alt_brain = root.parent / alt_name / "brain"
+    if alt_brain.is_dir():
+      brain_dirs.append(alt_brain)
+
+  seen_transcripts = set()
+  for b_dir in brain_dirs:
+    for transcript in b_dir.glob("*/.system_generated/logs/transcript.jsonl"):
+      session_id = transcript.parent.parent.parent.name
+      if session_id in seen_transcripts:
+        continue
+      seen_transcripts.add(session_id)
       try:
-        step = json.loads(line)
-      except ValueError:
+        lines = transcript.read_text(encoding="utf-8", errors="ignore").splitlines()
+      except OSError:
+        problems.append(str(transcript))
         continue
-      if not isinstance(step, dict):
-        continue
-      current = step_model(step) or selected_model(step) or current
-      tokens = step_tokens(step)
-      if not tokens or not any(tokens):
-        continue
-      # Tokens with no prompt, and maybe no date.
-      stats.add(local_day(step.get("created_at") or step.get("timestamp")) or None, None, current or "unknown", *tokens, prompts=0)
+      # The model a conversation runs on carries from step to step until a
+      # step names another one.
+      current = ""
+      for line in lines:
+        try:
+          step = json.loads(line)
+        except ValueError:
+          continue
+        if not isinstance(step, dict):
+          continue
+        current = step_model(step) or selected_model(step) or current
+        tokens = step_tokens(step)
+        if not tokens or not any(tokens):
+          continue
+        # Tokens with no prompt, and maybe no date.
+        stats.add(local_day(step.get("created_at") or step.get("timestamp")) or None, None, current or "unknown", *tokens, prompts=0)
 
   for row in harness_rows(problems):
     stats.add_row(row, model_key(row.model) or "unknown")
