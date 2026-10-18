@@ -252,9 +252,7 @@ omarchy-update-available
 - `omarchy-dev`, when installed
 - otherwise `omarchy`, when installed
 
-The dev check fetches the checkout's configured upstream before comparing it
-with `HEAD`. A failed fetch is quiet and falls back to the existing remote-
-tracking state.
+The dev check fetches the checkout's configured upstream before comparing it with the main branch (`quattro`). A failed fetch is quiet and falls back to the existing remote-tracking state.
 
 Exit codes:
 
