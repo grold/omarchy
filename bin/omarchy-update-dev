@@ -28,6 +28,15 @@ fi
 if [[ $(git -C "$OMARCHY_PATH" symbolic-ref -q HEAD 2>/dev/null || true) == "refs/heads/quattro" ]]; then
   git -C "$OMARCHY_PATH" pull --ff-only
 else
-  upstream_branch="${upstream#"$remote/"}"
-  git -C "$OMARCHY_PATH" fetch "$remote" "$upstream_branch:quattro"
+  quattro_worktree=$(git -C "$OMARCHY_PATH" worktree list --porcelain 2>/dev/null | awk '
+    /^worktree / { wt = substr($0, 10) }
+    /^branch refs\/heads\/quattro$/ { print wt; exit }
+  ')
+  if [[ -n $quattro_worktree ]]; then
+    git -C "$quattro_worktree" pull --ff-only
+  else
+    upstream_branch="${upstream#"$remote/"}"
+    git -C "$OMARCHY_PATH" fetch "$remote" "$upstream_branch:quattro"
+  fi
 fi
+
