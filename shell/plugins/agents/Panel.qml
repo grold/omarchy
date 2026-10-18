@@ -660,6 +660,8 @@ Panel {
       return Commons.I18n.t("agents.helpRunToRestoreUsage").arg("`claude auth login`")
     case "Run `codex login` to authenticate.":
       return Commons.I18n.t("agents.helpRunToAuthenticate").arg("`codex login`")
+    case "Run `agy` to sign in, or sign in to Antigravity in omp, pi, or opencode.":
+      return Commons.I18n.t("agents.helpAgySignIn").arg("`agy`")
     case "Start Grok, or run `grok login`, to sign in.":
       return Commons.I18n.t("agents.helpStartOrRunToSignIn").arg("Grok").arg("`grok login`")
     case "Start Grok to see its limits; signing in again is not needed.":
