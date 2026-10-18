@@ -28,6 +28,7 @@ case "$1" in
         echo true
         ;;
       --abbrev-ref)
+        [[ $4 == "quattro@{upstream}" ]] || exit 1
         [[ ${TEST_GIT_UPSTREAM:-origin/quattro} != "none" ]] || exit 1
         echo "${TEST_GIT_UPSTREAM:-origin/quattro}"
         ;;
@@ -37,20 +38,25 @@ case "$1" in
     esac
     ;;
   symbolic-ref)
-    echo refs/heads/quattro
+    echo "${TEST_GIT_BRANCH:-refs/heads/quattro}"
     ;;
   for-each-ref)
-    echo origin
+    [[ $3 == "refs/heads/quattro" ]] || exit 1
+    echo "${TEST_GIT_REMOTE:-origin}"
     ;;
   config)
     case "$2" in
-      remote.origin.url) echo https://github.com/omacom/omarchy.git ;;
-      remote.origin.promisor) [[ ${TEST_GIT_PROMISOR:-no} == "yes" ]] && echo true ;;
+      remote.*.url) echo https://github.com/omacom/omarchy.git ;;
+      remote.*.promisor) [[ ${TEST_GIT_PROMISOR:-no} == "yes" ]] && echo true ;;
       *) exit 1 ;;
     esac
     ;;
   fetch)
-    [[ $2 == "--filter=blob:none" && $3 == "origin" ]]
+    if [[ $2 == "--filter=blob:none" ]]; then
+      [[ $3 == "${TEST_GIT_REMOTE:-origin}" ]]
+    else
+      [[ $2 == "${TEST_GIT_REMOTE:-origin}" && $3 == "${TEST_GIT_FETCH_REFSPEC:-quattro:quattro}" ]]
+    fi
     ;;
   pull)
     [[ $2 == "--ff-only" ]]
@@ -90,10 +96,28 @@ fi
 pass "blobless dev checkout only pulls"
 
 : >"$git_log"
-TEST_GIT_UPSTREAM=none run_dev_update "$checkout"
+TEST_GIT_BRANCH=refs/heads/feature run_dev_update "$checkout"
+! grep -q ' pull ' "$git_log" ||
+  fail "dev checkout on another branch does not pull into the active branch" "$(cat "$git_log")"
+! grep -q ' checkout ' "$git_log" ||
+  fail "dev checkout on another branch does not switch branches" "$(cat "$git_log")"
+grep -Fx -- "-C $checkout fetch origin quattro:quattro" "$git_log" >/dev/null ||
+  fail "dev checkout on another branch updates quattro in-place via fetch" "$(cat "$git_log")"
+pass "dev checkout on another branch updates quattro in-place"
+
+: >"$git_log"
+TEST_GIT_BRANCH=refs/heads/feature TEST_GIT_REMOTE=upstream TEST_GIT_UPSTREAM=upstream/quattro run_dev_update "$checkout"
+grep -Fx -- "-C $checkout fetch upstream quattro:quattro" "$git_log" >/dev/null ||
+  fail "dev checkout on another branch uses quattro's configured remote" "$(cat "$git_log")"
+pass "dev checkout on another branch uses quattro's configured remote"
+
+: >"$git_log"
+TEST_GIT_UPSTREAM=none run_dev_update "$checkout" >"$test_tmp/no-upstream.out"
 if grep -q ' pull ' "$git_log"; then
   fail "dev checkout without an upstream is not pulled" "$(cat "$git_log")"
 fi
+grep -F "quattro branch has no upstream" "$test_tmp/no-upstream.out" >/dev/null ||
+  fail "dev checkout without an upstream names the quattro branch" "$(cat "$test_tmp/no-upstream.out")"
 pass "dev checkout without an upstream is skipped safely"
 
 : >"$git_log"
